@@ -1,0 +1,4 @@
+"Approx. File Size in MB","Lines","Non-unique Words"
+10,44965,2022982
+9,50513,1814463
+8,118008,1781569

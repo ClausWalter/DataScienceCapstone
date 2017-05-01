@@ -1,0 +1,322 @@
+---
+title: "Data Science Capstone - Milesteone Report"
+author: "Claus Walter"
+date: "01 Mai 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary
+The Data Science Capstone assignment requires to implement a Shiny-based word prediction application. The prediction algorithm has to be implemented using R. The data base for providing the input for the prediction algorithm has been provided by SwiftKey. The data covers several languages. In each language, three data files are provded: news, blogs and twitter. Here, we use only English, although the approach described in this document would work equally well for all languages.
+
+This document is explaning resp. covering the following areas:
+
+1. Obtain the data from SwiftKey
+
+2. Create a basic report of summary statistics about the data sets
+
+3. Report any interesting findings
+
+4. Get feedback on plans for creating a prediction algorithm and Shiny app
+
+Summarizing data download and cleansing: the data downloaded from SwiftKey was very extensive, so for getting past hardware restrictions only about 5% of the data could be utilized for the analysis. Data cleansing and calculating word n-grams (i.e. sequences of n strings separated by e.g. spaces) as basis for the prediction algorithms and data set statistics used the well-established R tm, RWeka and ggplot2 packages. Interesting findings: 
+
+1. It does not seem to make sense to use all data cleansing capabilities the tm package offers. Eliminating e.g. stop-words does not make sense from my perspective, since it would decrease prediction quality quite drastically
+
+2. High data volumes delivered by Swiftkey can simply not be processed on the hardware I have available, so I go for a 5% sample
+
+3. Data quality of the "news" data file made it necessary to process the file using a Java-program prior to processing it in R, since R would not load the data correctly due to misinterpreted characters
+
+4. With increasing length of the n-grams, they seem to get more specific to certain sources of data. So for an application, it would be useful which type of text should be predicted (news, tweets or blogs), so prediction quality and speed would increase
+
+5. Cutting out the n-grams with a very low frequency should improve memory consumption and speed drastically, decreasing the expected prediction success rate just slightly. At the same time, cutting out low-frequency n-grams removes many unwanted strings such as mistypings, hence increasing data quality
+
+6. A step taken in data preparation is to use stemming - which is the derivation of a words "stem", e.g. "working" would be stemmed into "work". To derive a dictionary for unstemming during word prediction might again be a challenge, since it again requires a certain tradeoff between speed, memory consumption and prediction accuracy
+
+7. The data cleansing capabilities of tm and RWeka did not deliver the full results expected. However, the quality delivered was satisfactory to do proper exploratory data analysis and come up with a plan for the application and additional self-defined data cleansing activities based on the RWeka-based output 
+
+Concerning the prediction algorithm implementation plan, I need to determine yet which method would be the best one. Currently, I see realizing the stupid back-off algorithm as the most promising one. In very simple terms, it would work as follows: 
+
+1. Use the n-grams determined during text analysis as basis for data frames. A pentagram would e.g. result in a data frame with 5 columns: 4 columns for the words identified, and 1 for the overall n-gram frequency of the according pentagram created by the data input
+
+2. For an input of e.g. 4 words, a match to these four words would be looked up in the data frame mentioned in step 1. As a preparation of the input in this step, the same preparation steps need to be applied as to the n-grams, such as stemming and removal of punctuation - otherwise, the matching would not be precise. So the words put in and used for predicting the output need to be stemmed, and punctuation removed
+
+3. In case of multiple matches, the highest frequency n-gram would be preferred over the others
+
+4. In case of no matches, switch from pentagram to quadgram analysis and start matching with the according data frame etc.
+
+5. Stop in case either three best matches have been identified, or continue with the approach with decreasing n-gram size until three matches have been identified or bi-grams have been reached (lowest level used here)
+
+6. For the best machtes (if any), the predicted value or values need to be unstemmed, punctuation put in again and checked for appropriateness. If an inappropriate (i.e. "bad") word is predicted, the prediction would be counted as no match
+
+For the Shiny app, a simple application mainly consisting of a text input field, a submit button and three result fields for the 3  best matches is anticipated, allowing to take over the prediction into the input field. Another tab will provide some details about how the predicted word or words were determined, e.g. what type of n-gram has been used to determine the predicted value.
+
+## Data Set Loading and Raw Data Analysis
+
+Firstly, a few steps need to be executed as preparation - e.g. load necessary libraries, load the Swiftkey data and unzip it. Please note that prior to processing the data in R, it was necessary to eliminate problematic character sequences out of the "en_US.news.txt" file, which I did using a Java program. Jus as a hint: for a preliminary test, I used a simple text editor to delete the problematic strings. Once identified which string caused the failure, it was easy to eliminate the problem. In R, an alternative I tried would have been to load the data as-is into a corpus, eliminate the problem using tm-package functionality and save the output as a file. Due to lack of time, I opted for using Java on the file as a very first step. 
+
+```{r prepration and loading, echo=FALSE, result=TRUE, warning=FALSE, message=FALSE, comment=""}
+library(tm)
+library(RWeka)
+library(ggplot2)
+library(wordcloud)
+library(reshape2)
+library(data.table)
+library(stringr)
+
+set.seed(256)
+Sys.setlocale(category = "LC_ALL", locale = "US")
+
+## Load data and create data sample, unless already done so. Note that I use 
+## absolute paths due to knitr restrictions. Kind of quick-and-dirty approach,
+## but good enough for the assignment. Please adjust to your needs in case
+## you want to run it on your computer.
+
+path<-getwd()
+url <-"https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+filename<- "SwiftkeyDB.zip"
+filenameNpath<-file.path(path, filename)
+if (!file.exists(path)) {dir.create(path)}
+if (!file.exists(filenameNpath)){
+        download.file(url, destfile = filenameNpath, mode = "wb")
+        unzip(zipfile=filenameNpath, exdir="./Capstone")
+}
+if(length(list.files("C:/Users/claus/Documents/Capstone/final/en_US/sample"))<3){
+        blogs <- readLines("C:/Users/claus/Documents/Capstone/final/en_US/en_US.blogs.txt")
+        news <- readLines(file("C:/Users/claus/Documents/Capstone/final/en_US/en_US.news.txt"))
+        twitter <- readLines("C:/Users/claus/Documents/Capstone/final/en_US/en_US.twitter.txt")
+        
+        blogs<-blogs[rbinom(length(blogs)* 0.05, length(blogs), 0.5)]
+        news<-news[rbinom(length(news)*0.05, length(news), 0.5)]
+        twitter<-twitter[rbinom(length(twitter)*0.05, length(twitter), 0.5)]
+        
+        write.csv(blogs, file="C:/Users/claus/Documents/Capstone/final/en_US/sample/sampleBlogs.txt", row.names=FALSE, col.names = FALSE)
+        write.csv(news, file="C:/Users/claus/Documents/Capstone/final/en_US/sample/sampleNews.txt", row.names=FALSE, col.names = FALSE)
+        write.csv(twitter, file="C:/Users/claus/Documents/Capstone/final/en_US/sample/sampleTwitter.txt", row.names=FALSE, col.names = FALSE)
+}
+```
+
+The following statistics result for the files provided by SwiftKey (English input files used only) and the 5% samples drawn from these files:
+
+```{r statistics full, echo=FALSE, result=TRUE, warning=FALSE, message=FALSE, comment=""}
+
+if(length(list.files("C:/Users/claus/Documents/Capstone/DataScienceCapstone/FileStats"))<2){
+        blogs <- readLines("C:/Users/claus/Documents/Capstone/final/en_US/en_US.blogs.txt")
+        news <- readLines("C:/Users/claus/Documents/Capstone/final/en_US/en_US.News.txt")
+        twitter <- readLines("C:/Users/claus/Documents/Capstone/final/en_US/en_US.Twitter.txt")
+        blogsSample <- readLines("C:/Users/claus/Documents/Capstone/final/en_US/sample/sampleBlogs.txt")
+        newsSample <- readLines("C:/Users/claus/Documents/Capstone/final/en_US/sample/sampleNews.txt")
+        twitterSample <- readLines("C:/Users/claus/Documents/Capstone/final/en_US/sample/sampleTwitter.txt")
+
+        ## Some file statistics (first original files, then sample files):
+
+        fileStats <- matrix(c(1:9),ncol=3,byrow=TRUE)
+        colnames(fileStats) <- c("Approx. File Size in MB","Lines", "Non-unique Words")
+        rownames(fileStats) <- c("Blog","News","Twitter")
+        fileStats[1,2]<-length(blogs)
+        fileStats[2,2]<-length(news)
+        fileStats[3,2]<-length(twitter)
+        fileStats[1,1]<-as.integer(file.size("C:/Users/claus/Documents/Capstone/final/en_US/en_US.blogs.txt")/1024^2)
+        fileStats[2,1]<-as.integer(file.size("C:/Users/claus/Documents/Capstone/final/en_US/en_US.news.txt")/1024^2)
+        fileStats[3,1]<-as.integer(file.size("C:/Users/claus/Documents/Capstone/final/en_US/en_US.twitter.txt")/1024^2)
+        fileStats[1,3]<-sum(sapply(gregexpr("\\W+", blogs), length) + 1)
+        fileStats[2,3]<-sum(sapply(gregexpr("\\W+", news), length) + 1)
+        fileStats[3,3]<-sum(sapply(gregexpr("\\W+", twitter), length) + 1)
+        write.csv(fileStats, file="C:/Users/claus/Documents/Capstone/DataScienceCapstone/FileStats/fileStats.txt", row.names=FALSE, col.names = FALSE)
+        
+        ## Removing the large temporary objects:
+
+        rm(blogs, news, twitter)
+        gc()
+
+        fileStats[1,2]<-length(blogsSample)
+        fileStats[2,2]<-length(newsSample)
+        fileStats[3,2]<-length(twitterSample)
+        fileStats[1,1]<-as.integer(file.size("C:/Users/claus/Documents/Capstone/final/en_US/sample/sampleBlogs.txt")/1024^2)
+        fileStats[2,1]<-as.integer(file.size("C:/Users/claus/Documents/Capstone/final/en_US/sample/sampleNews.txt")/1024^2)
+        fileStats[3,1]<-as.integer(file.size("C:/Users/claus/Documents/Capstone/final/en_US/sample/sampleTwitter.txt")/1024^2)
+        fileStats[1,3]<-sum(sapply(gregexpr("\\W+", blogsSample), length) + 1)
+        fileStats[2,3]<-sum(sapply(gregexpr("\\W+", newsSample), length) + 1)
+        fileStats[3,3]<-sum(sapply(gregexpr("\\W+", twitterSample), length) + 1)
+        fileStats   
+        write.csv(fileStats, file="C:/Users/claus/Documents/Capstone/DataScienceCapstone/FileStats/fileStatsSample.txt", row.names=FALSE, col.names = FALSE)
+        ## Creating the corpus and removing more temporary objects:        
+
+        rm(blogsSample, newsSample, twitterSample)
+        gc()
+}        
+print("Stats of the original files (English only):")
+fileStats<-read.csv("C:/Users/claus/Documents/Capstone/DataScienceCapstone/FileStats/fileStats.txt")
+fileStats
+print("Stats of the sample files (English only):")
+fileStats<-read.csv("C:/Users/claus/Documents/Capstone/DataScienceCapstone/FileStats/fileStatsSample.txt")
+fileStats   
+```
+
+So it can be seen that the file sizes and number of lines and words provided in the original files (news, blogs and twitter) are quite massive. Another intermediate step is creating the corpus, which I decided to build combining all three sample files (news, blogs and twitter), rather than three (one for each type):
+
+```{r corpus, echo=TRUE, result=TRUE, warning=FALSE, message=FALSE, comment=""}
+corpus<-VCorpus(DirSource("C:/Users/claus/Documents/Capstone/final/en_US/sample/"))
+
+## Now the real cleansing and transforming using standard tm functionlity;
+## skipping some standard steps for now:
+
+##        textCorpus<-tm_map(corpus, removeWords, stopwords("english"))
+##        corpus<-tm_map(corpus, removeWords, c("placeholder for bad words"))
+corpus<-tm_map(corpus, removePunctuation)
+corpus<-tm_map(corpus, content_transformer(tolower))
+corpus<-tm_map(corpus, removeNumbers)
+corpus<-tm_map(corpus, stemDocument)
+
+print("Summary corpus:")
+str(corpus) 
+```  
+
+As can be seen, the corpus is already relatively large, which comes partially from the fact that I did not remove stop words, since they are essential for text prediction.
+
+### Creating Word N-grams
+
+For creating the various possible word combinations, lower threshold were single words (unigrams) to see for single word usage frequencies, upper threshold were five words (pentagrams):
+
+```{r ngrams, echo=TRUE, result=TRUE, warning=FALSE, message=FALSE, comment=""}
+tdm <- function(corpus, n){
+        ngramTokens <- function(x) NGramTokenizer(x, Weka_control(min = n, max = n))
+        tdm <- TermDocumentMatrix(corpus, control = list(tokenize = ngramTokens))
+        tdm
+}
+
+## Calculating the n-grams and saving as csv files for later use in text prediction
+
+        matrixTdm1<-as.matrix(tdm(corpus,1))
+        write.table(matrixTdm1, file="C:/Users/claus/Documents/Capstone/DataScienceCapstone/ngrams/matrixTdm1.csv", sep=";", col.names=TRUE)
+        matrixTdm2<-as.matrix(tdm(corpus,2))
+        write.table(matrixTdm2, file="C:/Users/claus/Documents/Capstone/DataScienceCapstone/ngrams/matrixTdm2.csv", sep=";", col.names=TRUE)
+        matrixTdm3<-as.matrix(tdm(corpus,3))
+        write.table(matrixTdm3, file="C:/Users/claus/Documents/Capstone/DataScienceCapstone/ngrams/matrixTdm3.csv", sep=";", col.names=TRUE)
+        matrixTdm4<-as.matrix(tdm(corpus,4))
+        write.table(matrixTdm4, file="C:/Users/claus/Documents/Capstone/DataScienceCapstone/ngrams/matrixTdm4.csv", sep=";", col.names=TRUE)
+        matrixTdm5<-as.matrix(tdm(corpus,5))
+        write.table(matrixTdm5, file="C:/Users/claus/Documents/Capstone/DataScienceCapstone/ngrams/matrixTdm5.csv", sep=";", col.names=TRUE)
+
+## Unique ngram statistics per tdm matrix:
+
+tdmStats <- matrix(c(1:5),ncol=5,byrow=TRUE)
+row.names(tdmStats) <- c("Unique ngrams:")
+colnames(tdmStats) <- c("Unigram","Bigram","Trigram", "Quadgram", "Pentagram")
+tdmStats[1,1]<-nrow(matrixTdm1)
+tdmStats[1,2]<-nrow(matrixTdm2)
+tdmStats[1,3]<-nrow(matrixTdm3)
+tdmStats[1,4]<-nrow(matrixTdm4)
+tdmStats[1,5]<-nrow(matrixTdm5)
+tdmStats
+```
+
+These structures form the basis for extended exploratory data analysis - e.g. analyzing n-gram frequencies - and the later feed of word prediction algorithms as described in the executive summary. So to have the necessary data basis available, I save the n-grams created as files
+
+### N-gram Analysis
+
+As the below graphs show, results for the various sources of data - blogs, twitter and news - differ from each other in terms of frequency of terms and other aspects:
+
+```{r ngram analysis, echo=FALSE, result=TRUE, warning=FALSE, message=FALSE, comment=""}
+## Preparing the graphical output:
+
+output <- function(ngramMatrix){
+        ngramFreq<-data.frame(Ngram=rownames(ngramMatrix), 
+                              blogs=ngramMatrix[,1], 
+                              news=ngramMatrix[,2], 
+                              twitter=ngramMatrix[,3])
+        ngramFreq["sum"]<- rowSums(ngramFreq[,2:4])
+        ngramFreq<-ngramFreq[order(-ngramFreq$sum),]
+        ngramFreqBlogs<-ngramFreq[order(-ngramFreq[,2]), c(1,2,5)]
+        ngramFreqBlogs["Type"]=c("blogs")
+        colnames(ngramFreqBlogs)<-c("Ngram", "Frequency", "Sum", "Type")
+        ngramFreqNews<-ngramFreq[order(-ngramFreq[,3]), c(1,3,5)]
+        ngramFreqNews["Type"]=c("news")
+        colnames(ngramFreqNews)<-c("Ngram", "Frequency", "Sum", "Type")
+        ngramFreqTwitter<-ngramFreq[order(-ngramFreq[,4]), c(1,4,5)]
+        ngramFreqTwitter["Type"]=c("twitter")
+        colnames(ngramFreqTwitter)<-c("Ngram", "Frequency", "Sum", "Type")
+        ngramFreqRep<-rbind(ngramFreqBlogs, ngramFreqNews, ngramFreqTwitter)
+        colnames(ngramFreqRep)<-c("Ngram", "Frequency", "Sum", "Type")
+        ngramFreqRep<-ngramFreqRep[order(-ngramFreqRep[,3], ngramFreqRep[,1]),]
+        
+        wordcloud(ngramFreqRep[1:102,]$Ngram, ngramFreqRep[1:102,]$Frequency, colors=brewer.pal(6,"Dark2"))
+        
+        plot<-ggplot(ngramFreqRep[1:102,], aes(x= reorder(Ngram, Frequency), y=Frequency, fill=Type)) +
+                theme(axis.text=element_text(size=12)) +
+                scale_x_discrete(name="Ngram ordered by Frequency") +
+                geom_bar(stat="identity") +
+                coord_flip()
+        plot
+}
+```
+
+### 1-gram visualizations:
+
+```{r 1-gram, echo=FALSE, result=TRUE, warning=FALSE, comment=""}
+output(matrixTdm1)
+```
+
+### 2-gram visualizations:
+
+```{r 2-gram, echo=FALSE, result=TRUE, warning=FALSE, comment=""}
+output(matrixTdm2)
+```
+
+### 3-gram visualizations:
+
+```{r 3-gram, echo=FALSE, result=TRUE, warning=FALSE, comment=""}
+output(matrixTdm3)
+```
+
+### 4-gram visualizations:
+
+```{r 4-gram, echo=FALSE, result=TRUE, warning=FALSE, comment=""}
+output(matrixTdm4)
+```
+
+### 5-gram visualizations:
+```{r 5-gram, echo=FALSE, result=TRUE, warning=FALSE, comment=""}
+output(matrixTdm5)
+```
+
+It appears increasing the sample size does not have a big impact on the results. For prediction purposes, it might be more useful to identify if the Shiny app user might want to enter a blog text, a news article or a tweet. Based on that knowledge, the prediction accuracy is supposed to be increased.
+
+## Findings
+
+As briefly explained in the executive summary section, the following findings were made:
+
+1. Using the tm package allows for many options which might not be useful and/or perform well for later word predictions. Options available I consider not using are: checking for inadequate words and elimination of stop words. I intend to check for inadequate words only for words predicted, suppressing inadequate output. This allows for very good performance. Not eliminating stop-words should drastically increase prediction quality, since they are used quite frequently. I also have doubts about using stemming in the final solution: working with stemmed input will result into prediction values that are also stemmed. In real life, that would not really be useful. So the predicted values needed to be unstemmend. I need to check what the performance and quality impacts are. For the exploratory data analysis, I keep it in
+
+2. Massive amount of Swiftkey data does not allow for processing of the full amount of data available (at least not with an i5/8GB system). However, with an increasing number of data lines as input, the number of higher-frequency n-grams does not seem to increase drastically. I consider to implement a threshold value for the data used for the actual word prediction, cutting out the low-frequency n-grams. A good threshold value needs yet to be determined. Furthermore, I decided to focus on the English input only
+
+3. Data quality of the "news" data file made it necessary to process the file using a Java-program prior to processing it in R, since R would not load the data correctly due to misinterpreted signs
+
+4. With increasing length of the n-grams, they seem to get more specific to certain sources of data. So it could be beneficial for word prediction algorithms to know which type of input they have to compute, e.g. if the algorithm is supposed to predict a tweet, a blog post or some news article. This would allow for splitting up prediction data repositories, increasing prediction speed.
+
+5. Cutting out low-frequency n-grams should help the overall performance and eliminate low-quality n-grams, which would e.g. be n-grams that contain mystypings. I also expect that cutting out low-frequency n-grams would only slightly decrease the prediction success rate, since they represent word combinations that are rarely used.
+
+6. For the later word prediction, steps that have been taken to derive the n-grams have also to be applied to the word input. Once a word is predicted, steps such as unstemming that were applied to the underlying prediction text body need to be undone. Otherwise, a word that is predicted, but which might e.g. represent only the stem of a certain word, would still be considered wrong resp. useless by the user of the prediction application. 
+
+7. The n-grams created by tm resp. RWeka still show a lot of faulty strings resp. non-ascii-characters. I prepared some self-programmed routines which should easily fix these remaining problems - first tests look very promising. But I will do this as part of the application programming, since I consider this not as part of the exploratory data analysis, plus more time is needed for the testing of these routines.
+
+
+## Plans for creating a Prediction Algorithm and a Shiny App
+
+As explained in the executive summary section, the most likely approach for implementing a prediction algorithym is to use the following very simple stupid back-off algorithm: convert the n-grams determined into data frames and match input strings against the n-grams available. If e.g. three words are put in, these would be matched against the first three words of the quadgram data. From the matches determined, the one with the highest (n-gram) frequency is preferred. The prediction is the fourth word of the best-matching quadgram. In case there is no fit in the quadgram data, search continues in the trigram data, taking only the last two input words into account. In case no sufficient match or matches are found here, the search continues in the bigram data, taking only the last input word into account. For the match or matches identified, the prediction needs to be unstemmed. The same applies to other data preparation steps taken. Otherwise, the predicted string would probably still be just an approximation of the word that would be correctly predicted. For proper prediction, adequatly prepared n-gram data is required.
+
+For the Shiny app, a simple application mainly consisting of a text input field, a submit button and three result fields for the 3  best matches is anticipated, allowing to take over the prediction into the input field. Another tab will provide some details about how the predicted word or words were determined, e.g. what type of n-gram has been used to determine the predicted value, and what the associated n-gram frequency has been. Another tab will provide a brief documentation of how to use the Shiny app.
+
+## Appendix
+
+Please refer to the following github repository for the Rmd and R files:
+<https://github.com/ClausWalter/DataScienceCapstone>
+
+Note that some of the programming you see in there is sometimes not that sophisticated. Simple reason: lack of time, plus a one-time-use only. So very much as using Java for a small part of the initial data cleansing, I had to do some trade-off between producing high-quality code and just getting the job done. So in case you take a look: it might not be the most elegant coding (e.g. I use absolute file paths, not using too many variables resp. setting default paths), but it performs all right and got the job done.
+
+A good summary of the various models that could be used is given here: <http://www.cs.columbia.edu/~mcollins/courses/nlp2011/notes/lm.pdf>
+
+And some more on the model chosen for this application: <https://www.cs.cornell.edu/courses/cs4740/2012sp/lectures/smoothing+backoff-1-4pp.pdf>
